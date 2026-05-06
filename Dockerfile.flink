@@ -1,0 +1,27 @@
+# Custom Flink image with Python + PyFlink so we can submit Python jobs via
+# `flink run -py ...` and have them show up in the Web UI at :8081.
+FROM flink:1.20.1-scala_2.12-java11
+
+USER root
+
+# Install Python 3 + pip and a JDK (pemja, a PyFlink dependency, needs JNI
+# headers from a full JDK to build its wheel — the base image only ships a JRE).
+RUN apt-get update -y \
+ && apt-get install -y --no-install-recommends \
+        python3 python3-pip python3-venv python3-dev \
+        build-essential openjdk-11-jdk-headless \
+ && ln -sf /usr/bin/python3 /usr/bin/python \
+ && rm -rf /var/lib/apt/lists/*
+
+# pemja's setup.py looks under $JAVA_HOME/include for jni.h
+ENV JAVA_HOME_BUILD=/usr/lib/jvm/java-11-openjdk-arm64
+
+# Install PyFlink matching the Flink runtime version.
+# Upgrade pip toolchain first so wheels for transitive deps (e.g. pemja, numpy)
+# resolve correctly on Ubuntu 22.04 / Python 3.10.
+RUN export JAVA_HOME="$(dirname $(dirname $(readlink -f $(which javac))))" \
+ && echo "Using JAVA_HOME=$JAVA_HOME" \
+ && pip3 install --no-cache-dir --upgrade pip setuptools wheel \
+ && pip3 install --no-cache-dir "apache-flink==1.20.1"
+
+USER flink
