@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>AirQualityAnalyzer · Live</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="bg-orb orb-1"></div>
+  <div class="bg-orb orb-2"></div>
+  <div class="bg-orb orb-3"></div>
+
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3 12c3-6 9-6 12 0s9 6 6 0" />
+          <circle cx="6" cy="18" r="1.6" />
+          <circle cx="13" cy="6" r="1.6" />
+          <circle cx="20" cy="14" r="1.6" />
+        </svg>
+      </div>
+      <div>
+        <h1>AirQualityAnalyzer</h1>
+        <p>Real-time pollution telemetry · Kafka → Flink → WebSocket</p>
+      </div>
+    </div>
+    <div class="status">
+      <span id="conn-dot" class="dot offline"></span>
+      <span id="conn-text">connecting…</span>
+    </div>
+  </header>
+
+  <section class="stats">
+    <div class="card stat">
+      <span class="label">Active stations</span>
+      <span class="value" id="stat-stations">0</span>
+      <span class="trend">global network</span>
+    </div>
+    <div class="card stat">
+      <span class="label">Readings / min</span>
+      <span class="value" id="stat-rate">0</span>
+      <span class="trend">rolling 60 s</span>
+    </div>
+    <div class="card stat alert-stat">
+      <span class="label">Active alerts</span>
+      <span class="value" id="stat-alerts">0</span>
+      <span class="trend">last 100</span>
+    </div>
+    <div class="card stat critical-stat">
+      <span class="label">Critical episodes</span>
+      <span class="value" id="stat-critical">0</span>
+      <span class="trend">≥3 consecutive windows</span>
+    </div>
+  </section>
+
+  <main class="grid">
+    <section class="card panel map-panel">
+      <header class="panel-head">
+        <h2>Global station map</h2>
+        <div class="legend">
+          <span><i class="sw good"></i>good</span>
+          <span><i class="sw moderate"></i>moderate</span>
+          <span><i class="sw high"></i>high</span>
+          <span><i class="sw critical"></i>critical</span>
+        </div>
+      </header>
+      <div id="map"></div>
+    </section>
+
+    <section class="card panel chart-panel">
+      <header class="panel-head">
+        <h2>PM2.5 — rolling average</h2>
+        <select id="param-select">
+          <option value="pm25" selected>PM2.5</option>
+          <option value="pm10">PM10</option>
+          <option value="no2">NO₂</option>
+          <option value="o3">O₃</option>
+          <option value="so2">SO₂</option>
+          <option value="co">CO</option>
+        </select>
+      </header>
+      <canvas id="chart"></canvas>
+    </section>
+
+    <section class="card panel alerts-panel">
+      <header class="panel-head">
+        <h2>Live alert feed</h2>
+        <button id="clear-alerts">clear</button>
+      </header>
+      <ul id="alert-list" class="alert-list"></ul>
+    </section>
+
+    <section class="card panel readings-panel">
+      <header class="panel-head">
+        <h2>Latest readings</h2>
+      </header>
+      <ul id="readings-list" class="readings-list"></ul>
+    </section>
+  </main>
+
+  <div id="toast-host" class="toast-host"></div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+          integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -23,6 +23,27 @@ services:
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+
+  # One-shot job that creates all topics with the right partition counts.
+  # Real parallelism in Flink requires multiple partitions per topic.
+  kafka-init:
+    image: confluentinc/cp-kafka:7.4.0
+    depends_on:
+      - kafka
+    entrypoint: ["/bin/bash", "-c"]
+    command: |
+      "
+      echo 'Waiting for Kafka...';
+      cub kafka-ready -b kafka:29092 1 60;
+      for t in raw-air-quality:12 weather-stream:12 pollution-alerts:6 critical-alerts:3 enriched-readings:6; do
+        name=$${t%:*}; parts=$${t#*:};
+        kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists \
+          --topic $$name --partitions $$parts --replication-factor 1;
+      done;
+      echo 'Topics ready:'; kafka-topics --bootstrap-server kafka:29092 --list;
+      "
+    restart: "no"
 
   flink-jobmanager:
     build:
@@ -39,7 +60,7 @@ services:
       - |
         FLINK_PROPERTIES=
         jobmanager.rpc.address: flink-jobmanager
-      # Tell the script to use the in-docker Kafka address.
+        parallelism.default: 4
       - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
 
   flink-taskmanager:
@@ -50,6 +71,8 @@ services:
     depends_on:
       - flink-jobmanager
     command: taskmanager
+    deploy:
+      replicas: 2
     volumes:
       - ./jars/flink-sql-connector-kafka-3.3.0-1.20.jar:/opt/flink/lib/flink-sql-connector-kafka-3.3.0-1.20.jar
     environment:
@@ -58,3 +81,56 @@ services:
         jobmanager.rpc.address: flink-jobmanager
         taskmanager.numberOfTaskSlots: 4
       - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+
+  # OpenAQ -> raw-air-quality
+  producer:
+    build:
+      context: .
+      dockerfile: Dockerfile.producers
+    depends_on:
+      - kafka-init
+    env_file:
+      - .env
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - POLL_INTERVAL_SEC=15
+      - LIMIT_PER_PARAM=200
+    command: ["python", "producer.py"]
+    restart: unless-stopped
+
+  # Open-Meteo -> weather-stream
+  weather-producer:
+    build:
+      context: .
+      dockerfile: Dockerfile.producers
+    depends_on:
+      - kafka-init
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - WEATHER_POLL_SEC=60
+      - WEATHER_MAX_STATIONS=100
+    command: ["python", "weather_producer.py"]
+    restart: unless-stopped
+
+  # FastAPI WebSocket bridge: Kafka -> browser
+  backend:
+    build:
+      context: ./backend
+    depends_on:
+      - kafka-init
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  # Static dashboard served by nginx, proxies /ws + /api to backend
+  frontend:
+    build:
+      context: ./frontend
+    depends_on:
+      - backend
+    ports:
+      - "8080:80"
+    restart: unless-stopped
+
