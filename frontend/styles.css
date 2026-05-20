@@ -124,10 +124,10 @@ body {
   gap: 12px;
   padding: 10px 28px 18px;
 }
-.map-panel    { grid-column: 1; grid-row: 1; }
-.chart-panel  { grid-column: 2; grid-row: 1; }
-.alerts-panel { grid-column: 1; grid-row: 2; }
-.readings-panel { grid-column: 2; grid-row: 2; }
+.map-panel     { grid-column: 1; grid-row: 1; }
+.alerts-panel  { grid-column: 2; grid-row: 1; }
+.chart-panel   { grid-column: 1; grid-row: 2; }
+.readings-panel{ grid-column: 2; grid-row: 2; }
 
 .panel { display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
 .panel-head {
@@ -188,13 +188,12 @@ select:hover, button:hover { background: rgba(255,255,255,0.12); }
   flex: 1 1 auto;
   min-height: 0;
   position: relative;
-  padding: 10px 12px 12px;
+  padding: 8px 14px 12px;
 }
 .chart-wrap canvas {
-  position: absolute !important;
-  top: 10px; left: 12px; right: 12px; bottom: 12px;
-  width: auto !important;
-  height: auto !important;
+  display: block;
+  width: 100% !important;
+  height: 100% !important;
 }
 
 /* ---------- alerts ---------- */

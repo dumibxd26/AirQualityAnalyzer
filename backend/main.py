@@ -10,6 +10,8 @@ import asyncio
 import json
 import logging
 import os
+import time
+import uuid
 from collections import deque
 from contextlib import asynccontextmanager
 from typing import Any
@@ -80,14 +82,25 @@ def _update_state(kind: str, value: dict[str, Any]) -> None:
             STATIONS[loc]["humidity"] = value.get("humidity")
 
 
+# Topics that should replay history on every backend restart so the UI
+# can re-populate alerts buffer (bounded by deque maxlen anyway).
+REPLAY_TOPICS = {"pollution-alerts", "critical-alerts"}
+
+# Unique tag so REPLAY_TOPICS consumers start with a fresh group each run
+# (forces offset reset to take effect).
+_RUN_TAG = f"{int(time.time())}-{uuid.uuid4().hex[:6]}"
+
 async def consume_topic(topic: str, kind: str) -> None:
+    replay = topic in REPLAY_TOPICS
+    group_id = f"ui-bridge-{topic}-{_RUN_TAG}" if replay else f"ui-bridge-{topic}"
+    offset_reset = "earliest" if replay else "latest"
     while True:
         try:
             consumer = AIOKafkaConsumer(
                 topic,
                 bootstrap_servers=BOOTSTRAP,
-                group_id=f"ui-bridge-{topic}",
-                auto_offset_reset="latest",
+                group_id=group_id,
+                auto_offset_reset=offset_reset,
                 value_deserializer=lambda v: json.loads(v.decode("utf-8")),
             )
             await consumer.start()
