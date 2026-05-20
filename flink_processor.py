@@ -90,6 +90,9 @@ def run_analytics_pipeline():
     """)
 
     # 3. Sinks ----------------------------------------------------------------
+    # Sinks use end-to-end exactly-once: enabled checkpointing + Kafka
+    # transactional sinks. Each sink needs its own transactional-id prefix so
+    # parallel sub-tasks across topics don't collide on transaction ids.
     t_env.execute_sql(f"""
         CREATE TABLE PollutionAlerts (
             location    STRING,
@@ -103,7 +106,9 @@ def run_analytics_pipeline():
             'topic' = 'pollution-alerts',
             'properties.bootstrap.servers' = '{KAFKA_BOOTSTRAP}',
             'format' = 'json',
-            'sink.delivery-guarantee' = 'at-least-once'
+            'sink.delivery-guarantee' = 'exactly-once',
+            'sink.transactional-id-prefix' = 'aqa-pollution-alerts',
+            'properties.transaction.timeout.ms' = '900000'
         )
     """)
 
@@ -124,7 +129,9 @@ def run_analytics_pipeline():
             'topic' = 'enriched-readings',
             'properties.bootstrap.servers' = '{KAFKA_BOOTSTRAP}',
             'format' = 'json',
-            'sink.delivery-guarantee' = 'at-least-once'
+            'sink.delivery-guarantee' = 'exactly-once',
+            'sink.transactional-id-prefix' = 'aqa-enriched',
+            'properties.transaction.timeout.ms' = '900000'
         )
     """)
 
@@ -141,7 +148,9 @@ def run_analytics_pipeline():
             'topic' = 'critical-alerts',
             'properties.bootstrap.servers' = '{KAFKA_BOOTSTRAP}',
             'format' = 'json',
-            'sink.delivery-guarantee' = 'at-least-once'
+            'sink.delivery-guarantee' = 'exactly-once',
+            'sink.transactional-id-prefix' = 'aqa-critical',
+            'properties.transaction.timeout.ms' = '900000'
         )
     """)
 
@@ -260,10 +269,9 @@ def run_analytics_pipeline():
                                AND a.window_rowtime + INTERVAL '5' MINUTE
     """
 
-    # 4e. CRITICAL escalation: 3+ consecutive breaching windows.
-    #     HOP requires a rowtime attribute, so we group on window_rowtime
-    #     (carried through alerts_sql) instead of the plain TIMESTAMP(3)
-    #     window_end column.
+    # 4e. CRITICAL escalation: 3+ breaching windows inside a 5-minute bucket.
+    #     We use TUMBLE (non-overlapping) instead of HOP so a single episode
+    #     produces exactly one critical-alert row, not 5 overlapping copies.
     critical_sql = f"""
         SELECT
             location,
@@ -276,7 +284,7 @@ def run_analytics_pipeline():
             {alerts_sql}
         ) breaches
         GROUP BY
-            HOP(window_rowtime, INTERVAL '1' MINUTE, INTERVAL '5' MINUTE),
+            TUMBLE(window_rowtime, INTERVAL '5' MINUTE),
             location,
             `parameter`
         HAVING COUNT(*) >= 3

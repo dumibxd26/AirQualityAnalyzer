@@ -46,12 +46,22 @@
     <div class="card stat">
       <span class="label">Readings / min</span>
       <span class="value" id="stat-rate">0</span>
-      <span class="trend">rolling 60 s</span>
+      <span class="trend" id="stat-rate-sec">0/s · rolling 60 s</span>
+    </div>
+    <div class="card stat">
+      <span class="label">Total ingested</span>
+      <span class="value" id="stat-total">0</span>
+      <span class="trend" id="stat-last">last: —</span>
+    </div>
+    <div class="card stat">
+      <span class="label">Flink windows / min</span>
+      <span class="value" id="stat-enriched">0</span>
+      <span class="trend">closed 1-min aggregates</span>
     </div>
     <div class="card stat alert-stat">
       <span class="label">Active alerts</span>
       <span class="value" id="stat-alerts">0</span>
-      <span class="trend">last 100</span>
+      <span class="trend" id="stat-worst">worst: —</span>
     </div>
     <div class="card stat critical-stat">
       <span class="label">Critical episodes</span>

@@ -5,12 +5,24 @@ const PARAM_THRESHOLDS = {
   pm25: 15, pm10: 45, no2: 25, o3: 60, so2: 40, co: 4,
 };
 
+// Per-parameter readings on the map are considered stale after this. Older
+// entries are ignored when computing a station's severity color, so a single
+// historical spike can't keep a dot red forever.
+const STATION_PARAM_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const SEVERITY_RANK = ['critical', 'high', 'moderate', 'good']; // worst -> best
+
 const state = {
   ws: null,
-  stations: new Map(), // location -> {lat, lon, marker, lastBy}
+  // location -> {lat, lon, marker, avgBy: {param: {value, ts, source}}}
+  // `source` is 'enriched' (Flink window AVG, authoritative) or 'raw'
+  // (single sample, used only as a fallback before any window has closed).
+  stations: new Map(),
   alerts: [],
   critical: [],
-  rateBuffer: [], // timestamps of recent readings
+  rateBuffer: [],         // raw-reading timestamps in last 60s
+  enrichedBuffer: [],     // enriched-reading timestamps in last 60s
+  totalReadings: 0,       // cumulative since this tab loaded
+  lastReadingTs: null,    // wall-clock of most recent raw reading
   chartParam: 'pm25',
   chartSeries: [],
 };
@@ -35,17 +47,35 @@ function upsertStation(rec) {
   const key = rec.location;
   let st = state.stations.get(key);
   if (!st) {
-    st = { lat: rec.lat, lon: rec.lon, lastBy: {}, marker: null };
+    st = { lat: rec.lat, lon: rec.lon, avgBy: {}, marker: null };
     state.stations.set(key, st);
   }
-  if (rec.parameter) st.lastBy[rec.parameter] = rec.value;
+  // First-wins coordinates: avoid jitter when different sensors at the same
+  // station report slightly different lat/lon for different pollutants.
+  if (st.lat == null || st.lon == null) {
+    st.lat = rec.lat;
+    st.lon = rec.lon;
+  }
 
-  // Compute worst severity across parameters.
+  if (rec.parameter && typeof rec.value === 'number') {
+    const prev = st.avgBy[rec.parameter];
+    // Don't let a single raw sample overwrite a Flink-windowed average.
+    if (!(prev && prev.source === 'enriched' && rec.source !== 'enriched')) {
+      st.avgBy[rec.parameter] = {
+        value: rec.value,
+        ts: Date.now(),
+        source: rec.source || 'raw',
+      };
+    }
+  }
+
+  // Worst severity across NON-STALE parameters.
+  const cutoff = Date.now() - STATION_PARAM_TTL_MS;
   let worst = 'good';
-  for (const [p, v] of Object.entries(st.lastBy)) {
-    const s = severityFor(p, v);
-    if (['critical','high','moderate','good'].indexOf(s) <
-        ['critical','high','moderate','good'].indexOf(worst)) {
+  for (const [p, entry] of Object.entries(st.avgBy)) {
+    if (entry.ts < cutoff) continue;
+    const s = severityFor(p, entry.value);
+    if (SEVERITY_RANK.indexOf(s) < SEVERITY_RANK.indexOf(worst)) {
       worst = s;
     }
   }
@@ -62,10 +92,23 @@ function upsertStation(rec) {
 }
 
 function stationPopup(name, st) {
-  const rows = Object.entries(st.lastBy)
-    .map(([p, v]) => `<div><b>${p}</b>: ${Number(v).toFixed(2)}</div>`).join('');
+  const cutoff = Date.now() - STATION_PARAM_TTL_MS;
+  const rows = Object.entries(st.avgBy)
+    .filter(([, e]) => e.ts >= cutoff)
+    .map(([p, e]) => {
+      const tag = e.source === 'enriched' ? 'avg' : '~';
+      return `<div><b>${p}</b>: ${Number(e.value).toFixed(2)} <span style="color:var(--muted)">(${tag})</span></div>`;
+    }).join('');
   return `<div><b>${name}</b></div>${rows || '<div>no data yet</div>'}`;
 }
+
+// Periodically force a redraw so dots fade back to green as their per-param
+// entries age past the TTL even if no new data arrives for that station.
+setInterval(() => {
+  state.stations.forEach((st, key) => {
+    upsertStation({ location: key, lat: st.lat, lon: st.lon });
+  });
+}, 30_000);
 
 // ----------------- chart -----------------
 const chartCtx = document.getElementById('chart');
@@ -112,8 +155,8 @@ document.getElementById('param-select').addEventListener('change', e => {
   // re-seed from current in-memory station readings so the chart isn't blank
   const seed = [];
   state.stations.forEach(st => {
-    const v = st.lastBy[state.chartParam];
-    if (typeof v === 'number') seed.push(v);
+    const e2 = st.avgBy[state.chartParam];
+    if (e2 && typeof e2.value === 'number') seed.push(e2.value);
   });
   if (seed.length) {
     const avg = seed.reduce((s, v) => s + v, 0) / seed.length;
@@ -176,7 +219,10 @@ function addCritical(c) {
 }
 
 function addReading(r) {
-  state.rateBuffer.push(Date.now());
+  const now = Date.now();
+  state.rateBuffer.push(now);
+  state.totalReadings += 1;
+  state.lastReadingTs = now;
 
   const li = document.createElement('li');
   li.className = 'fresh';
@@ -189,11 +235,44 @@ function addReading(r) {
   setTimeout(() => li.classList.remove('fresh'), 1500);
 }
 
-// readings/min ticker
+function worstSeverityLabel() {
+  // Count alerts by severity in the last 100 buffered.
+  const counts = { CRITICAL: 0, HIGH: 0, MODERATE: 0 };
+  for (const a of state.alerts) {
+    if (counts[a.severity] != null) counts[a.severity] += 1;
+  }
+  if (counts.CRITICAL) return `worst: critical (${counts.CRITICAL})`;
+  if (counts.HIGH)     return `worst: high (${counts.HIGH})`;
+  if (counts.MODERATE) return `worst: moderate (${counts.MODERATE})`;
+  return 'worst: —';
+}
+
+function formatAge(ms) {
+  if (ms == null) return '—';
+  const s = Math.floor(ms / 1000);
+  if (s < 1)  return 'just now';
+  if (s < 60) return `${s}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  return `${Math.floor(m / 60)}h ago`;
+}
+
+// Stats ticker: tick every 1s so the dashboard never feels frozen.
 setInterval(() => {
-  const cutoff = Date.now() - 60_000;
-  state.rateBuffer = state.rateBuffer.filter(t => t > cutoff);
-  document.getElementById('stat-rate').textContent = state.rateBuffer.length;
+  const now = Date.now();
+  const cutoff60 = now - 60_000;
+  const cutoff5  = now - 5_000;
+  state.rateBuffer     = state.rateBuffer.filter(t => t > cutoff60);
+  state.enrichedBuffer = state.enrichedBuffer.filter(t => t > cutoff60);
+  const last5 = state.rateBuffer.filter(t => t > cutoff5).length;
+
+  document.getElementById('stat-rate').textContent     = state.rateBuffer.length;
+  document.getElementById('stat-rate-sec').textContent = `${(last5 / 5).toFixed(1)}/s · rolling 60 s`;
+  document.getElementById('stat-enriched').textContent = state.enrichedBuffer.length;
+  document.getElementById('stat-total').textContent    = state.totalReadings.toLocaleString();
+  document.getElementById('stat-last').textContent     =
+    state.lastReadingTs ? `last: ${formatAge(now - state.lastReadingTs)}` : 'last: —';
+  document.getElementById('stat-worst').textContent    = worstSeverityLabel();
 }, 1000);
 
 // chart aggregator: average per 5s window
@@ -232,7 +311,10 @@ function handle(msg) {
       const rec = { location: s.location, lat: s.lat, lon: s.lon };
       upsertStation(rec);
       Object.entries(s.readings || {}).forEach(([p, v]) => {
-        upsertStation({ location: s.location, lat: s.lat, lon: s.lon, parameter: p, value: v });
+        upsertStation({
+          location: s.location, lat: s.lat, lon: s.lon,
+          parameter: p, value: v, source: 'raw',
+        });
         if (p === state.chartParam && typeof v === 'number') seedValues.push(v);
       });
     });
@@ -248,7 +330,10 @@ function handle(msg) {
     return;
   }
   if (msg.type === 'reading') {
-    upsertStation(msg.data);
+    // Raw readings keep the station alive on the map (coords, last_seen) and
+    // feed the live readings list + chart, but they are NOT authoritative
+    // for severity color -- enriched (windowed AVG) is.
+    upsertStation({ ...msg.data, source: 'raw' });
     addReading(msg.data);
     if (msg.data.parameter === state.chartParam && typeof msg.data.value === 'number') {
       chartAggBuf.push(msg.data.value);
@@ -256,10 +341,14 @@ function handle(msg) {
     return;
   }
   if (msg.type === 'enriched') {
+    state.enrichedBuffer.push(Date.now());
+    // Authoritative window-averaged value -> drives map color, in agreement
+    // with the alert thresholds Flink applies on the same average.
     upsertStation({
       location: msg.data.location,
       lat: msg.data.lat, lon: msg.data.lon,
       parameter: msg.data.parameter, value: msg.data.avg_value,
+      source: 'enriched',
     });
     return;
   }
