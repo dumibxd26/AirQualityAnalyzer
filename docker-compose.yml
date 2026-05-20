@@ -38,8 +38,7 @@ services:
       cub kafka-ready -b kafka:29092 1 60;
       for t in raw-air-quality:12 weather-stream:12 pollution-alerts:6 critical-alerts:3 enriched-readings:6; do
         name=$${t%:*}; parts=$${t#*:};
-        kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists \
-          --topic $$name --partitions $$parts --replication-factor 1;
+        kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic $$name --partitions $$parts --replication-factor 1;
       done;
       echo 'Topics ready:'; kafka-topics --bootstrap-server kafka:29092 --list;
       "

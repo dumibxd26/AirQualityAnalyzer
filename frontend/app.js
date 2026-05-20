@@ -109,6 +109,16 @@ document.getElementById('param-select').addEventListener('change', e => {
   chart.data.labels = [];
   chart.data.datasets[0].data = [];
   chart.update('none');
+  // re-seed from current in-memory station readings so the chart isn't blank
+  const seed = [];
+  state.stations.forEach(st => {
+    const v = st.lastBy[state.chartParam];
+    if (typeof v === 'number') seed.push(v);
+  });
+  if (seed.length) {
+    const avg = seed.reduce((s, v) => s + v, 0) / seed.length;
+    pushChartSample(state.chartParam, avg, Date.now());
+  }
 });
 
 function pushChartSample(param, value, ts) {
@@ -217,13 +227,20 @@ function setConn(ok) {
 
 function handle(msg) {
   if (msg.type === 'snapshot') {
+    const seedValues = [];
     (msg.data.stations || []).forEach(s => {
       const rec = { location: s.location, lat: s.lat, lon: s.lon };
       upsertStation(rec);
       Object.entries(s.readings || {}).forEach(([p, v]) => {
         upsertStation({ location: s.location, lat: s.lat, lon: s.lon, parameter: p, value: v });
+        if (p === state.chartParam && typeof v === 'number') seedValues.push(v);
       });
     });
+    // seed the chart with an initial point so it isn't blank for 5 s
+    if (seedValues.length) {
+      const avg = seedValues.reduce((s, v) => s + v, 0) / seedValues.length;
+      pushChartSample(state.chartParam, avg, Date.now());
+    }
     (msg.data.alerts || []).forEach(addAlert);
     (msg.data.critical || []).forEach(addCritical);
     document.getElementById('stat-alerts').textContent = state.alerts.length;

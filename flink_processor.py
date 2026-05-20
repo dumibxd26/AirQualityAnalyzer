@@ -179,13 +179,16 @@ def run_analytics_pipeline():
     """
 
     # 4b. 1-minute tumbling aggregation per (station, parameter).
+    #     window_rowtime is required so downstream operators (HOP, interval
+    #     join) can keep treating window_end as an event-time attribute.
     t_env.execute_sql(f"""
         CREATE TEMPORARY VIEW MinuteAggregates AS
         SELECT
             location,
             `parameter`,
-            TUMBLE_START(`timestamp`, INTERVAL '1' MINUTE) AS window_start,
-            TUMBLE_END(`timestamp`, INTERVAL '1' MINUTE)   AS window_end,
+            TUMBLE_START(`timestamp`, INTERVAL '1' MINUTE)   AS window_start,
+            TUMBLE_END(`timestamp`, INTERVAL '1' MINUTE)     AS window_end,
+            TUMBLE_ROWTIME(`timestamp`, INTERVAL '1' MINUTE) AS window_rowtime,
             AVG(`value`)  AS avg_value,
             COUNT(*)      AS sample_count,
             MAX(lat)      AS lat,
@@ -204,6 +207,7 @@ def run_analytics_pipeline():
             location,
             `parameter`,
             window_end,
+            window_rowtime,
             avg_value,
             sample_count,
             CASE
@@ -235,6 +239,8 @@ def run_analytics_pipeline():
 
     # 4d. Stream-stream INTERVAL JOIN: enrich every aggregate window with the
     #     most recent weather sample for that station (within +-5 minutes).
+    #     Uses window_rowtime (an event-time attribute) so Flink recognises
+    #     this as a true interval join.
     enriched_sql = """
         SELECT
             a.location,
@@ -250,13 +256,14 @@ def run_analytics_pipeline():
         FROM MinuteAggregates a
         LEFT JOIN Weather w
           ON a.location = w.location
-         AND w.`timestamp` BETWEEN a.window_end - INTERVAL '5' MINUTE
-                               AND a.window_end + INTERVAL '5' MINUTE
+         AND w.`timestamp` BETWEEN a.window_rowtime - INTERVAL '5' MINUTE
+                               AND a.window_rowtime + INTERVAL '5' MINUTE
     """
 
     # 4e. CRITICAL escalation: 3+ consecutive breaching windows.
-    #     Aggregate severity events in a 5-minute hopping window per
-    #     (location, parameter).
+    #     HOP requires a rowtime attribute, so we group on window_rowtime
+    #     (carried through alerts_sql) instead of the plain TIMESTAMP(3)
+    #     window_end column.
     critical_sql = f"""
         SELECT
             location,
@@ -269,15 +276,22 @@ def run_analytics_pipeline():
             {alerts_sql}
         ) breaches
         GROUP BY
-            HOP(window_end, INTERVAL '1' MINUTE, INTERVAL '5' MINUTE),
+            HOP(window_rowtime, INTERVAL '1' MINUTE, INTERVAL '5' MINUTE),
             location,
             `parameter`
         HAVING COUNT(*) >= 3
     """
 
     # 5. Execute all sinks in one job ----------------------------------------
+    # The internal `alerts_sql` view carries `window_rowtime` so the critical
+    # HOP window can use it as an event-time attribute. The sink tables don't
+    # have that column, so each INSERT projects only the matching fields.
     stmt = t_env.create_statement_set()
-    stmt.add_insert_sql(f"INSERT INTO PollutionAlerts {alerts_sql}")
+    stmt.add_insert_sql(f"""
+        INSERT INTO PollutionAlerts
+        SELECT location, `parameter`, window_end, avg_value, sample_count, severity
+        FROM ({alerts_sql})
+    """)
     stmt.add_insert_sql(f"INSERT INTO EnrichedReadings {enriched_sql}")
     stmt.add_insert_sql(f"INSERT INTO CriticalAlerts {critical_sql}")
     stmt.add_insert_sql(f"""
