@@ -22,21 +22,21 @@ if not os.path.isfile(EDGE):
 
 CSS = """
 @page { size: A4; margin: 14mm 15mm; }
-body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 10pt; color: #1a1a1a; line-height: 1.4; }
-h1 { font-size: 19pt; color: #14324f; margin: 0 0 4pt 0; }
-h2 { font-size: 14pt; color: #14324f; border-bottom: 1px solid #c9d3dc; padding-bottom: 3px; margin-top: 18px; }
-h3 { font-size: 11.5pt; color: #1f4763; margin-top: 12px; }
+body { font-family: 'Times New Roman', Times, serif; font-size: 11pt; color: #000000; line-height: 1.4; }
+h1 { font-size: 19pt; color: #000000; margin: 0 0 4pt 0; }
+h2 { font-size: 14pt; color: #000000; border-bottom: 1px solid #000000; padding-bottom: 3px; margin-top: 18px; }
+h3 { font-size: 12pt; color: #000000; margin-top: 12px; }
 p { margin: 5px 0; text-align: justify; }
-a { color: #1763a6; text-decoration: none; }
-table { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 9pt; }
-th { background-color: #14324f; color: #ffffff; padding: 5px 7px; text-align: left; }
-td { border: 0.5pt solid #c9d3dc; padding: 4px 7px; }
-tr:nth-child(even) td { background-color: #f2f5f8; }
-code { font-family: 'Cascadia Code', Consolas, monospace; font-size: 8.5pt; background-color: #eef1f4; padding: 0 2px; }
-pre { background-color: #f2f5f8; border: 0.5pt solid #d4dbe2; padding: 8px; font-family: Consolas, monospace; font-size: 8pt; overflow: hidden; }
-pre code { background: none; }
+a { color: #000000; text-decoration: underline; }
+table { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 10pt; }
+th { background-color: #ffffff; color: #000000; padding: 5px 7px; text-align: left; border: 0.5pt solid #000000; }
+td { border: 0.5pt solid #000000; padding: 4px 7px; }
+tr:nth-child(even) td { background-color: #ffffff; }
+code { font-family: 'Times New Roman', Times, serif; font-size: 10pt; background-color: #ffffff; padding: 0 2px; }
+pre { background-color: #ffffff; border: 0.5pt solid #000000; padding: 8px; font-family: 'Courier New', Courier, monospace; font-size: 8.5pt; overflow: hidden; color: #000000; }
+pre code { background: none; font-family: 'Courier New', Courier, monospace; }
 img { width: 62%; display: block; margin: 6px auto; }
-hr { border: none; border-top: 1px solid #c9d3dc; }
+hr { border: none; border-top: 1px solid #000000; }
 h2 { page-break-after: avoid; }
 table, pre, img { page-break-inside: avoid; }
 """
