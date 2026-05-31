@@ -1,37 +1,35 @@
-# AirQualityAnalyzer — procesare în timp real a datelor de calitate a aerului
+# AirQualityAnalyzer — real-time processing of air quality data
 
-**Tehnici de procesare a datelor de mari dimensiuni**
+**Techniques for processing large-scale data**
 
-Repository public: <https://github.com/dumibxd26/AirQualityAnalyzer>
+Public repository: <https://github.com/dumibxd26/AirQualityAnalyzer>
 
----
+## 1. About the project
 
-## 1. Despre proiect
+The project builds a stream-processing pipeline for air quality data. It reads
+measurements from public stations, combines them with weather data for the same
+location, computes aggregates over time windows, raises alerts when
+concentrations exceed the thresholds recommended by the WHO, and pushes the
+results to a dashboard that updates as the data arrives.
 
-Proiectul construiește o conductă de procesare în flux pentru date de calitate a
-aerului. Citește măsurători de la stații publice, le combină cu date meteo
-pentru aceeași locație, calculează agregate pe ferestre de timp, ridică alerte
-când concentrațiile depășesc pragurile recomandate de OMS și trimite rezultatele
-către un panou de vizualizare care se actualizează pe măsură ce sosesc datele.
+The whole chain runs in Docker containers and uses three technologies that cover
+the usual roles in a streaming data platform:
 
-Întregul lanț rulează în containere Docker și folosește trei tehnologii care
-acoperă rolurile uzuale dintr-o platformă de date în flux:
+- **Apache Kafka** — the message bus that decouples the data sources from the
+  compute engine. Each type of message has its own topic.
+- **Apache Flink (PyFlink)** — the stream-processing engine that performs the
+  windowed aggregations, the pollution-weather join, and the alert escalation.
+- **FastAPI + WebSocket + frontend** — a bridge that takes the results from
+  Kafka and pushes them to the browser, plus a dashboard written in JavaScript
+  with a map (Leaflet) and charts (Chart.js).
 
-- **Apache Kafka** — magistrala de mesaje care decuplează sursele de date de
-  motorul de calcul. Fiecare tip de mesaj are propriul subiect (topic).
-- **Apache Flink (PyFlink)** — motorul de procesare în flux care face
-  agregările pe ferestre, joncțiunea dintre poluare și meteo și escaladarea
-  alertelor.
-- **FastAPI + WebSocket + frontend** — un pod care preia rezultatele din Kafka
-  și le împinge în browser, plus un panou scris în JavaScript cu hartă
-  (Leaflet) și grafice (Chart.js).
+Why this data lends itself to stream processing: the measurements arrive
+continuously, in approximate order, from dozens of stations, and their
+informational value is highest while they are fresh. A threshold-breach alert
+makes sense to be raised within seconds, not at the end of the day after a batch
+job.
 
-Motivul pentru care aceste date se pretează la procesare în flux: măsurătorile
-sosesc continuu, în ordine aproximativă, din zeci de stații, iar valoarea lor
-informativă este maximă cât sunt proaspete. O alertă de depășire a pragului are
-sens să fie ridicată în secunde, nu la sfârșitul zilei după o procesare în lot.
-
-## 2. Arhitectura
+## 2. Architecture
 
 ```
 OpenAQ ──► producer.py ──┐
@@ -39,63 +37,59 @@ OpenAQ ──► producer.py ──┐
 Open-Meteo ──► weather_producer.py ─┘   (topics)  (job)   (topics)   (WebSocket)
 ```
 
-Fluxul de date, etapă cu etapă:
+The data flow, step by step:
 
-1. **`producer.py`** interoghează API-ul OpenAQ v3 pentru șase poluanți și
-   publică fiecare măsurătoare în subiectul `raw-air-quality`.
-2. **`weather_producer.py`** ascultă `raw-air-quality` ca să afle ce stații
-   există (cu latitudine și longitudine), apoi interoghează Open-Meteo pentru
-   vremea curentă la fiecare stație și publică în `weather-stream`.
-3. **`flink_processor.py`** consumă ambele subiecte, calculează agregate pe
-   ferestre de un minut, le îmbogățește cu meteo, detectează depășirile de prag
-   și scrie în subiectele `pollution-alerts`, `enriched-readings` și
-   `critical-alerts`.
-4. **`backend/main.py`** consumă subiectele de ieșire și le retransmite prin
-   WebSocket către panou; expune și `/health` și `/snapshot` pentru starea
-   curentă.
-5. **`frontend/`** afișează harta stațiilor, graficele pe poluanți și lista de
-   alerte, actualizate în timp real.
+1. **`producer.py`** queries the OpenAQ v3 API for six pollutants and publishes
+   each measurement to the `raw-air-quality` topic.
+2. **`weather_producer.py`** listens to `raw-air-quality` to learn which
+   stations exist (with latitude and longitude), then queries Open-Meteo for the
+   current weather at each station and publishes to `weather-stream`.
+3. **`flink_processor.py`** consumes both topics, computes one-minute window
+   aggregates, enriches them with weather, detects threshold breaches, and writes
+   to the `pollution-alerts`, `enriched-readings`, and `critical-alerts` topics.
+4. **`backend/main.py`** consumes the output topics and forwards them over
+   WebSocket to the dashboard; it also exposes `/health` and `/snapshot` for the
+   current state.
+5. **`frontend/`** shows the station map, the per-pollutant charts, and the
+   alert list, updated in real time.
 
-### 2.1 Subiectele Kafka
+### 2.1 Kafka topics
 
-Brokerul rulează cu un singur nod plus Zookeeper. Subiectele sunt create
-explicit, cu numere de partiții alese în funcție de volum și de gradul de
-paralelism dorit în Flink:
+The broker runs as a single node plus Zookeeper. Topics are created explicitly,
+with partition counts chosen based on volume and the degree of parallelism wanted
+in Flink:
 
-| Subiect | Partiții | Conținut |
+| Topic | Partitions | Content |
 |---|---|---|
-| `raw-air-quality` | 12 | măsurători brute de la OpenAQ |
-| `weather-stream` | 12 | vremea curentă pe stație de la Open-Meteo |
-| `enriched-readings` | 6 | agregate pe minut + meteo (pentru panou) |
-| `pollution-alerts` | 6 | depășiri de prag pe fereastră |
-| `critical-alerts` | 3 | episoade escaladate (depășiri repetate) |
+| `raw-air-quality` | 12 | raw measurements from OpenAQ |
+| `weather-stream` | 12 | current per-station weather from Open-Meteo |
+| `enriched-readings` | 6 | per-minute aggregates + weather (for the dashboard) |
+| `pollution-alerts` | 6 | per-window threshold breaches |
+| `critical-alerts` | 3 | escalated episodes (repeated breaches) |
 
-Brokerul are două ascultătoare: unul intern (`kafka:29092`) pentru serviciile
-din Docker și unul extern (`localhost:9092`) pentru procesele de pe gazdă.
-Subiectul intern `__transaction_state` este configurat cu factor de replicare 1
-și ISR minim 1, condiție necesară ca scrierile tranzacționale ale Flink să
-funcționeze pe un singur broker.
+The broker has two listeners: an internal one (`kafka:29092`) for the Docker
+services and an external one (`localhost:9092`) for host processes. The internal
+`__transaction_state` topic is configured with replication factor 1 and minimum
+ISR 1, a requirement for Flink's transactional writes to work on a single broker.
 
-### 2.2 Jobul Flink
+### 2.2 The Flink job
 
-Jobul rulează cu un JobManager și două TaskManager-e, paralelism implicit 4 și
-checkpoint la fiecare 30 de secunde în mod `EXACTLY_ONCE`. Folosește timpul
-evenimentului (event time) cu watermark de 60 de secunde toleranță la
-dezordine. Deoarece cele 12 partiții ale fiecărui subiect nu primesc date
-uniform, partițiile inactive sunt marcate ca atare după 10 secunde, ca
-watermark-ul global să poată avansa.
+The job runs with one JobManager and two TaskManagers, default parallelism 4, and
+a checkpoint every 30 seconds in `EXACTLY_ONCE` mode. It uses event time with a
+60-second watermark tolerance for out-of-orderness. Because the 12 partitions of
+each topic do not receive data uniformly, idle partitions are marked as such
+after 10 seconds so the global watermark can still advance.
 
-Toate ieșirile sunt produse de un singur `StatementSet` cu patru destinații
-(alerte de poluare, citiri îmbogățite, alerte critice și o destinație de tip
-print pentru log).
+All outputs are produced by a single `StatementSet` with four sinks (pollution
+alerts, enriched readings, critical alerts, and a print sink for the log).
 
-## 3. Cum sunt preluate datele
+## 3. How the data is collected
 
-### 3.1 OpenAQ (calitatea aerului)
+### 3.1 OpenAQ (air quality)
 
-`producer.py` interoghează endpoint-ul OpenAQ v3 pentru șase parametri:
+`producer.py` queries the OpenAQ v3 endpoint for six parameters:
 
-| Id OpenAQ | Parametru |
+| OpenAQ id | Parameter |
 |---|---|
 | 2 | pm25 |
 | 1 | pm10 |
@@ -104,50 +98,50 @@ print pentru log).
 | 9 | so2 |
 | 8 | co |
 
-Intervalul de interogare este de 15 secunde. Câteva decizii de proiectare merită
-menționate, pentru că ele determină calitatea datelor care intră în pipeline:
+The poll interval is 15 seconds. A few design decisions are worth noting, because
+they determine the quality of the data entering the pipeline:
 
-- **De-duplicare.** OpenAQ `/latest` întoarce aceeași valoare la fiecare ciclu
-  până când stația publică una nouă. Producătorul reține ultima pereche
-  `(locație, parametru)` văzută și nu republică aceeași măsurătoare decât după
-  ce expiră un interval (90 de secunde), pentru a păstra ferestrele Flink
-  alimentate fără a inunda subiectul.
-- **Eliminarea citirilor vechi.** `/latest` poate întoarce valori vechi de ani
-  de la stații scoase din uz, care altfel ar strica watermark-ul. Citirile mai
-  vechi de șase ore sunt aruncate.
-- **Rescrierea marcajului de timp.** Marcajul mesajului Kafka este pus la timpul
-  de ingestie, ca ferestrele pe timp de eveniment să se închidă prompt; timpul
-  original al evenimentului este păstrat separat în `event_time`.
-- **Filtrarea valorilor santinelă.** OpenAQ folosește valori speciale pentru
-  „lipsă de date" (de exemplu 9999, -999). Acestea trec de praguri și produc
-  alerte false. Producătorul respinge santinelele exacte plus limite superioare
-  implauzibile pe poluant.
+- **De-duplication.** OpenAQ `/latest` returns the same value on every cycle
+  until the station publishes a new one. The producer keeps the last
+  `(location, parameter)` pair it saw and does not republish the same measurement
+  until an interval (90 seconds) elapses, to keep the Flink windows fed without
+  flooding the topic.
+- **Dropping stale readings.** `/latest` can return values years old from
+  defunct stations, which would otherwise corrupt the watermark. Readings older
+  than six hours are discarded.
+- **Rewriting the timestamp.** The Kafka message timestamp is set to ingest time
+  so the event-time windows close promptly; the original event time is kept
+  separately in `event_time`.
+- **Filtering sentinel values.** OpenAQ uses special "no data" values (for
+  example 9999, -999). These pass the thresholds and produce false alerts. The
+  producer rejects the exact sentinels plus implausible per-pollutant upper
+  bounds.
 
-### 3.2 Open-Meteo (vremea)
+### 3.2 Open-Meteo (weather)
 
-`weather_producer.py` nu interoghează la întâmplare: se abonează la
-`raw-air-quality`, învață ce stații există și unde se află, apoi interoghează
-Open-Meteo pentru vremea curentă (temperatură, viteza și direcția vântului,
-umiditate, precipitații) la fiecare stație, la fiecare 60 de secunde. Rezultatul
-se publică în `weather-stream`. Acest al doilea flux există ca să facă posibilă
-joncțiunea dintre poluare și meteo în Flink.
+`weather_producer.py` does not query at random: it subscribes to
+`raw-air-quality`, learns which stations exist and where they are, then queries
+Open-Meteo for the current weather (temperature, wind speed and direction,
+humidity, precipitation) at each station, every 60 seconds. The result is
+published to `weather-stream`. This second stream exists to make the
+pollution-weather join in Flink possible.
 
-## 4. Cum sunt definite alertele
+## 4. How alerts are defined
 
-Toată logica de alertare se află în jobul Flink și are trei niveluri.
+All alerting logic lives in the Flink job and has three levels.
 
-### 4.1 Agregarea pe fereastră
+### 4.1 Window aggregation
 
-Pe sursa de poluare se face o fereastră *tumbling* de un minut, grupată după
-`(locație, parametru)`, care produce media valorilor și numărul de eșantioane
-din fereastră. Doar valorile nenule și nenegative intră în medie.
+The pollution source is aggregated over a one-minute *tumbling* window, grouped by
+`(location, parameter)`, producing the average of the values and the sample count
+in the window. Only non-null, non-negative values enter the average.
 
-### 4.2 Depășirea pragului
+### 4.2 Threshold breach
 
-Media fiecărei ferestre este comparată cu un prag specific poluantului, inspirat
-de recomandările OMS:
+Each window's average is compared with a pollutant-specific threshold, inspired by
+the WHO recommendations:
 
-| Parametru | Prag |
+| Parameter | Threshold |
 |---|---|
 | pm25 | 15 |
 | pm10 | 45 |
@@ -156,165 +150,167 @@ de recomandările OMS:
 | so2 | 40 |
 | co | 4 |
 
-Când media depășește pragul, se emite o alertă în `pollution-alerts`, clasificată
-pe severitate:
+When the average exceeds the threshold, an alert is emitted to
+`pollution-alerts`, classified by severity:
 
-- **MODERATE** — peste prag;
-- **HIGH** — peste de două ori pragul;
-- **CRITICAL** — peste de trei ori pragul.
+- **MODERATE** — above the threshold;
+- **HIGH** — above twice the threshold;
+- **CRITICAL** — above three times the threshold.
 
-### 4.3 Escaladarea critică
+### 4.3 Critical escalation
 
-Depășirile izolate nu sunt neapărat relevante. Pentru a prinde episoadele
-susținute, alertele sunt grupate într-o fereastră *tumbling* de cinci minute pe
-`(locație, parametru)`; dacă într-o fereastră apar cel puțin trei depășiri
-consecutive, se emite un singur eveniment în `critical-alerts`, cu valoarea de
-vârf și numărul de depășiri. Fereastra non-suprapusă garantează că un episod
-produce un singur eveniment critic, nu copii multiple.
+Isolated breaches are not necessarily relevant. To catch sustained episodes, the
+alerts are grouped in a five-minute *tumbling* window by `(location, parameter)`;
+if at least three consecutive breaches appear in a window, a single event is
+emitted to `critical-alerts`, with the peak value and the breach count. The
+non-overlapping window guarantees that one episode produces a single critical
+event, not multiple copies.
 
-### 4.4 Îmbogățirea cu meteo
+### 4.4 Weather enrichment
 
-În paralel, agregatele pe minut sunt unite cu fluxul meteo printr-o joncțiune pe
-interval (interval join): fiecare fereastră primește eșantionul meteo al
-aceleiași stații aflat în intervalul de ±5 minute. Rezultatul ajunge în
-`enriched-readings` și alimentează panoul și analiza de corelație de mai jos.
+In parallel, the per-minute aggregates are joined with the weather stream through
+an interval join: each window receives the weather sample of the same station
+that falls within a ±5-minute interval. The result lands in `enriched-readings`
+and feeds the dashboard and the correlation analysis below.
 
-## 5. Rezultate
+## 5. Results
 
-Pentru raport, pipeline-ul a rulat continuu și am colectat datele timp de o oră
-(31 mai 2026, 13:19–14:19 UTC) direct din subiectele Kafka. Volumul procesat în
-acest interval:
+For the report, the pipeline ran continuously and we collected the data for one
+hour (31 May 2026, 13:19–14:19 UTC) directly from the Kafka topics. The volume
+processed in this interval:
 
-| Subiect | Înregistrări noi în oră |
+| Topic | New records in the hour |
 |---|---|
-| `raw-air-quality` | ~28.200 |
-| `enriched-readings` | ~63.700 |
+| `raw-air-quality` | ~28,200 |
+| `enriched-readings` | ~63,700 |
 | `pollution-alerts` | 682 |
 | `critical-alerts` | 140 |
 
-Din fluxul de ieșire am capturat 62.908 ferestre îmbogățite, 488 de alerte de
-poluare și 101 evenimente critice. Distribuția pe severitate a alertelor a fost
-de 451 MODERATE și 37 HIGH; nicio fereastră nu a atins pragul CRITICAL (peste de
-trei ori limita), ceea ce e consistent cu o atmosferă fără episoade extreme în
-acel interval.
+From the output stream we captured 62,908 enriched windows, 488 pollution alerts,
+and 101 critical events. The severity distribution of the alerts was 451 MODERATE
+and 37 HIGH; no window reached the CRITICAL threshold (above three times the
+limit), which is consistent with an atmosphere without extreme episodes during
+that interval.
 
-### 5.1 Debit și volum cumulat
+### 5.1 Throughput and cumulative volume
 
-Numărul de mesaje a crescut constant pe toate subiectele pe durata orei, fără
-opriri, ceea ce confirmă că pipeline-ul s-a menținut stabil.
+The number of messages grew steadily across all topics over the hour, without
+stalls, which confirms that the pipeline stayed stable.
 
-![Debit pe subiect](data/run_20260531_161904/figures/throughput_over_time.png)
+![Throughput per topic](data/run_20260531_161904/figures/throughput_over_time.png)
 
-![Volum cumulat](data/run_20260531_161904/figures/cumulative_records.png)
+![Cumulative volume](data/run_20260531_161904/figures/cumulative_records.png)
 
-### 5.2 Statistici pe poluant
+### 5.2 Per-pollutant statistics
 
-Tabelul de mai jos rezumă cele 62.908 de ferestre îmbogățite, pe poluant. Pentru
-pm25 și pm10 valorile sunt în µg/m³ și se compară direct cu pragul OMS. Pentru
-no2, o3, so2 și co, sursa OpenAQ raportează în ppm, deci comparația absolută cu
-pragul nu se aplică direct; fiecare poluant este analizat separat.
+The table below summarizes the 62,908 enriched windows, per pollutant. For pm25
+and pm10 the values are in µg/m³ and compare directly with the WHO threshold. For
+no2, o3, so2, and co, the OpenAQ source reports in ppm, so the absolute
+comparison with the threshold does not apply directly; each pollutant is analyzed
+separately.
 
-| Poluant | Ferestre | Medie | Mediană | Max | P95 | % peste prag |
+| Pollutant | Windows | Mean | Median | Max | P95 | % over threshold |
 |---|---|---|---|---|---|---|
-| pm25 | 5.240 | 8.99 | 8.98 | 36.60 | 18.00 | 13.0% |
-| pm10 | 11.930 | 23.76 | 22.00 | 85.50 | 50.00 | 6.9% |
-| no2 | 17.831 | 0.012 | 0.010 | 0.047 | 0.028 | 0% |
-| o3 | 9.218 | 0.046 | 0.046 | 0.085 | 0.070 | 0% |
-| so2 | 9.347 | 0.003 | 0.002 | 0.008 | 0.005 | 0% |
-| co | 9.342 | 0.337 | 0.280 | 2.200 | 0.650 | 0% |
+| pm25 | 5,240 | 8.99 | 8.98 | 36.60 | 18.00 | 13.0% |
+| pm10 | 11,930 | 23.76 | 22.00 | 85.50 | 50.00 | 6.9% |
+| no2 | 17,831 | 0.012 | 0.010 | 0.047 | 0.028 | 0% |
+| o3 | 9,218 | 0.046 | 0.046 | 0.085 | 0.070 | 0% |
+| so2 | 9,347 | 0.003 | 0.002 | 0.008 | 0.005 | 0% |
+| co | 9,342 | 0.337 | 0.280 | 2.200 | 0.650 | 0% |
 
-Observația principală: dintre poluanții măsurați în µg/m³, pm25 este cel care
-depășește pragul cel mai des — 13% dintre ferestre, cu un vârf de 36,6 µg/m³,
-adică de 2,4 ori limita OMS. pm10 depășește în 6,9% dintre ferestre, cu vârf de
-85,5 µg/m³.
+The main observation: among the pollutants measured in µg/m³, pm25 is the one
+that exceeds the threshold most often — 13% of the windows, with a peak of 36.6
+µg/m³, that is 2.4 times the WHO limit. pm10 exceeds in 6.9% of the windows, with
+a peak of 85.5 µg/m³.
 
-### 5.3 Distribuția concentrațiilor
+### 5.3 Concentration distribution
 
-Graficul de tip boxplot arată distribuția pe poluant (scară logaritmică, cu
-pragul marcat). Mediile și mediile relativ apropiate indică distribuții fără
-asimetrii mari, dar cu valori extreme la pm25 și pm10.
+The boxplot shows the per-pollutant distribution (log scale, with the threshold
+marked). The relatively close means and medians indicate distributions without
+large skew, but with extreme values for pm25 and pm10.
 
-![Distribuția concentrațiilor](data/run_20260531_161904/figures/distribution_boxplot.png)
+![Concentration distribution](data/run_20260531_161904/figures/distribution_boxplot.png)
 
-### 5.4 Evoluția în timp pe poluant
+### 5.4 Time evolution per pollutant
 
-![Evoluția pe poluant](data/run_20260531_161904/figures/per_pollutant_timeseries.png)
+![Evolution per pollutant](data/run_20260531_161904/figures/per_pollutant_timeseries.png)
 
-### 5.5 Concentrație medie față de pragul OMS
+### 5.5 Mean concentration versus the WHO threshold
 
-![Concentrație vs OMS](data/run_20260531_161904/figures/concentration_vs_who.png)
+![Concentration vs WHO](data/run_20260531_161904/figures/concentration_vs_who.png)
 
-### 5.6 Alerte
+### 5.6 Alerts
 
-Repartiția alertelor pe poluant și pe severitate, plus evoluția lor în timp:
+The distribution of alerts per pollutant and per severity, plus their evolution
+over time:
 
-![Alerte pe poluant](data/run_20260531_161904/figures/alerts_per_pollutant.png)
+![Alerts per pollutant](data/run_20260531_161904/figures/alerts_per_pollutant.png)
 
-![Distribuția severității](data/run_20260531_161904/figures/severity_distribution.png)
+![Severity distribution](data/run_20260531_161904/figures/severity_distribution.png)
 
-![Cronologia alertelor](data/run_20260531_161904/figures/alerts_timeline.png)
+![Alert timeline](data/run_20260531_161904/figures/alerts_timeline.png)
 
-Stațiile cu cele mai multe alerte:
+The stations with the most alerts:
 
-![Top stații](data/run_20260531_161904/figures/top_stations.png)
+![Top stations](data/run_20260531_161904/figures/top_stations.png)
 
-### 5.7 Corelația cu vremea
+### 5.7 Correlation with weather
 
-Folosind ferestrele îmbogățite, am calculat corelația Pearson dintre concentrația
-fiecărui poluant și trei variabile meteo:
+Using the enriched windows, we computed the Pearson correlation between each
+pollutant's concentration and three weather variables:
 
-| Poluant | Vânt | Temperatură | Umiditate | n |
+| Pollutant | Wind | Temperature | Humidity | n |
 |---|---|---|---|---|
-| pm25 | 0.095 | 0.370 | -0.215 | 2.037 |
-| pm10 | 0.131 | 0.525 | 0.502 | 10.731 |
-| no2 | -0.118 | 0.026 | 0.244 | 15.538 |
-| o3 | -0.263 | 0.022 | 0.020 | 4.398 |
-| so2 | -0.558 | -0.384 | 0.100 | 5.295 |
-| co | -0.502 | -0.413 | -0.156 | 4.497 |
+| pm25 | 0.095 | 0.370 | -0.215 | 2,037 |
+| pm10 | 0.131 | 0.525 | 0.502 | 10,731 |
+| no2 | -0.118 | 0.026 | 0.244 | 15,538 |
+| o3 | -0.263 | 0.022 | 0.020 | 4,398 |
+| so2 | -0.558 | -0.384 | 0.100 | 5,295 |
+| co | -0.502 | -0.413 | -0.156 | 4,497 |
 
-Câteva relații se desprind din date: so2 și co scad când vântul crește
-(corelație -0,56, respectiv -0,50), ceea ce e consistent cu dispersia poluanților
-de către vânt. pm10 crește cu temperatura și umiditatea (0,53 și 0,50).
+A few relationships stand out from the data: so2 and co decrease as the wind
+rises (correlation -0.56 and -0.50 respectively), which is consistent with wind
+dispersing the pollutants. pm10 rises with temperature and humidity (0.53 and
+0.50).
 
-![Corelația cu vremea](data/run_20260531_161904/figures/weather_correlation.png)
+![Correlation with weather](data/run_20260531_161904/figures/weather_correlation.png)
 
-## 6. Garanții de procesare
+## 6. Processing guarantees
 
-Pipeline-ul este configurat pentru livrare exactly-once de la capăt la capăt:
-checkpointing activat la 30 de secunde, plus destinații Kafka tranzacționale, cu
-prefix de id de tranzacție distinct pe fiecare destinație, ca subtask-urile
-paralele să nu intre în coliziune. Jobul a rulat pe durata orei cu 28 de
-task-uri, fără reporniri.
+The pipeline is configured for end-to-end exactly-once delivery: checkpointing
+enabled at 30 seconds, plus transactional Kafka sinks, with a distinct
+transaction-id prefix per sink so the parallel sub-tasks do not collide. The job
+ran over the hour with 28 tasks, without restarts.
 
-## 7. Rularea proiectului
+## 7. Running the project
 
-Întregul stack pornește cu Docker Compose:
+The whole stack starts with Docker Compose:
 
 ```bash
 docker compose up -d
 ```
 
-Aceasta ridică Zookeeper, brokerul Kafka, jobul de inițializare a subiectelor,
-clusterul Flink (JobManager + 2 TaskManager), cei doi producători, backend-ul
-FastAPI și frontend-ul. Panoul este disponibil la `http://localhost:8080`, iar
-interfața web Flink la `http://localhost:8081`.
+This brings up Zookeeper, the Kafka broker, the topic-initialization job, the
+Flink cluster (JobManager + 2 TaskManagers), the two producers, the FastAPI
+backend, and the frontend. The dashboard is available at `http://localhost:8080`,
+and the Flink web UI at `http://localhost:8081`.
 
-Scriptul de colectare a statisticilor și cel de generare a graficelor se află în
-directorul `report/` și se conectează la ascultătorul extern al Kafka
+The statistics collection script and the figure generation script are in the
+`report/` directory and connect to the external Kafka listener
 (`localhost:9092`).
 
-## 8. Structura codului
+## 8. Code structure
 
-| Fișier | Rol |
+| File | Role |
 |---|---|
 | `producer.py` | OpenAQ → `raw-air-quality` |
 | `weather_producer.py` | Open-Meteo → `weather-stream` |
-| `flink_processor.py` | agregare, joncțiune, alerte |
-| `backend/main.py` | pod Kafka → WebSocket + REST |
-| `frontend/` | panou (hartă, grafice, alerte) |
-| `docker-compose.yml` | orchestrare |
-| `report/collect_stats.py` | colectare statistici din Kafka |
-| `report/make_plots.py` | generarea figurilor |
+| `flink_processor.py` | aggregation, join, alerts |
+| `backend/main.py` | Kafka → WebSocket + REST bridge |
+| `frontend/` | dashboard (map, charts, alerts) |
+| `docker-compose.yml` | orchestration |
+| `report/collect_stats.py` | statistics collection from Kafka |
+| `report/make_plots.py` | figure generation |
 
-Codul sursă complet este disponibil în repository-ul public:
+The complete source code is available in the public repository:
 <https://github.com/dumibxd26/AirQualityAnalyzer>
