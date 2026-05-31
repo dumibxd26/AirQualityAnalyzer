@@ -1,0 +1,12 @@
+# Run summary
+- Duration: 60.0 min  (interval 30s)
+- raw-air-quality: +28191 records during run
+- enriched-readings: +63703 records during run
+- pollution-alerts: +682 records during run
+- critical-alerts: +140 records during run
+- pollution-alerts captured: 488
+- critical-alerts captured: 101
+- enriched records captured: 62908
+  - MODERATE: 451
+  - HIGH: 37
+  - CRITICAL: 0

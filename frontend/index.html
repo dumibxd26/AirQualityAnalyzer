@@ -32,6 +32,7 @@
       </div>
     </div>
     <div class="status">
+      <button id="pause-btn" class="pause-btn">‖ pause</button>
       <span id="conn-dot" class="dot offline"></span>
       <span id="conn-text">connecting…</span>
     </div>
@@ -74,11 +75,22 @@
     <section class="card panel map-panel">
       <header class="panel-head">
         <h2>Global station map</h2>
-        <div class="legend">
-          <span><i class="sw good"></i>good</span>
-          <span><i class="sw moderate"></i>moderate</span>
-          <span><i class="sw high"></i>high</span>
-          <span><i class="sw critical"></i>critical</span>
+        <div class="map-head-right">
+          <select id="map-param-select" title="Color stations by pollutant">
+            <option value="all" selected>all (worst)</option>
+            <option value="pm25">PM2.5</option>
+            <option value="pm10">PM10</option>
+            <option value="no2">NO₂</option>
+            <option value="o3">O₃</option>
+            <option value="so2">SO₂</option>
+            <option value="co">CO</option>
+          </select>
+          <div class="legend">
+            <span><i class="sw good"></i>good</span>
+            <span><i class="sw moderate"></i>moderate</span>
+            <span><i class="sw high"></i>high</span>
+            <span><i class="sw critical"></i>critical</span>
+          </div>
         </div>
       </header>
       <div id="map"></div>
@@ -97,6 +109,14 @@
         </select>
       </header>
       <div class="chart-wrap"><canvas id="chart"></canvas></div>
+    </section>
+
+    <section class="card panel chart-max-panel">
+      <header class="panel-head">
+        <h2>PM2.5 — network peak</h2>
+        <span class="panel-hint" id="chart-max-hint">worst station · WHO 15</span>
+      </header>
+      <div class="chart-wrap"><canvas id="chart-max"></canvas></div>
     </section>
 
     <section class="card panel alerts-panel">

@@ -25,6 +25,9 @@ const state = {
   lastReadingTs: null,    // wall-clock of most recent raw reading
   chartParam: 'pm25',
   chartSeries: [],
+  chartMaxSeries: [],
+  mapParam: 'all',        // 'all' = worst across pollutants, else a single one
+  paused: false,          // freeze live updates for clean screenshots
 };
 
 // ----------------- map -----------------
@@ -33,6 +36,14 @@ L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
   maxZoom: 19,
   subdomains: 'abcd',
 }).addTo(map);
+
+// Keep the Leaflet canvas in sync with its (now fixed-height) container so it
+// repaints correctly after the window is resized.
+let _resizeRaf = 0;
+window.addEventListener('resize', () => {
+  cancelAnimationFrame(_resizeRaf);
+  _resizeRaf = requestAnimationFrame(() => map.invalidateSize());
+});
 
 function severityFor(param, value) {
   const t = PARAM_THRESHOLDS[param] ?? Infinity;
@@ -69,11 +80,14 @@ function upsertStation(rec) {
     }
   }
 
-  // Worst severity across NON-STALE parameters.
+  // Worst severity across NON-STALE parameters. When a specific map pollutant
+  // is selected, color by that pollutant alone (stations without a fresh
+  // reading for it render as 'good').
   const cutoff = Date.now() - STATION_PARAM_TTL_MS;
   let worst = 'good';
   for (const [p, entry] of Object.entries(st.avgBy)) {
     if (entry.ts < cutoff) continue;
+    if (state.mapParam !== 'all' && p !== state.mapParam) continue;
     const s = severityFor(p, entry.value);
     if (SEVERITY_RANK.indexOf(s) < SEVERITY_RANK.indexOf(worst)) {
       worst = s;
@@ -111,48 +125,71 @@ setInterval(() => {
 }, 30_000);
 
 // ----------------- chart -----------------
-const chartCtx = document.getElementById('chart');
-const chart = new Chart(chartCtx, {
-  type: 'line',
-  data: {
-    labels: [],
-    datasets: [{
-      label: 'avg',
-      data: [],
-      borderColor: '#6ee7ff',
-      backgroundColor: ctx => {
-        const c = ctx.chart.ctx;
-        const g = c.createLinearGradient(0, 0, 0, 280);
-        g.addColorStop(0, 'rgba(110,231,255,0.45)');
-        g.addColorStop(1, 'rgba(110,231,255,0)');
-        return g;
-      },
-      borderWidth: 2,
-      tension: 0.35,
-      fill: true,
-      pointRadius: 0,
-      pointHoverRadius: 4,
-    }],
-  },
-  options: {
-    responsive: true,
-    maintainAspectRatio: false,
-    plugins: { legend: { display: false } },
-    scales: {
-      x: { ticks: { color: '#8b93a7', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.04)' } },
-      y: { ticks: { color: '#8b93a7' }, grid: { color: 'rgba(255,255,255,0.05)' } },
+function makeLineChart(canvasId, color, fillRgba) {
+  return new Chart(document.getElementById(canvasId), {
+    type: 'line',
+    data: {
+      labels: [],
+      datasets: [{
+        label: 'value',
+        data: [],
+        borderColor: color,
+        backgroundColor: ctx => {
+          const c = ctx.chart.ctx;
+          const area = ctx.chart.chartArea;
+          const h = area ? area.bottom : 280;
+          const g = c.createLinearGradient(0, area ? area.top : 0, 0, h);
+          g.addColorStop(0, fillRgba.replace('ALPHA', '0.30'));
+          g.addColorStop(1, fillRgba.replace('ALPHA', '0'));
+          return g;
+        },
+        borderWidth: 2.5,
+        tension: 0.35,
+        fill: true,
+        pointRadius: 0,
+        pointHoverRadius: 4,
+      }],
     },
-    animation: { duration: 400 },
-  },
-});
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: '#8b93a7', font: { size: 10 }, maxTicksLimit: 8 }, grid: { color: 'rgba(255,255,255,0.04)' } },
+        y: { ticks: { color: '#8b93a7' }, grid: { color: 'rgba(255,255,255,0.05)' }, beginAtZero: true, grace: '35%' },
+      },
+      animation: { duration: 400 },
+    },
+  });
+}
+
+const chart    = makeLineChart('chart',     '#6ee7ff', 'rgba(110,231,255,ALPHA)');
+const chartMax = makeLineChart('chart-max', '#fb923c', 'rgba(251,146,60,ALPHA)');
+
+const PARAM_LABELS = {
+  pm25: 'PM2.5', pm10: 'PM10', no2: 'NO\u2082', o3: 'O\u2083', so2: 'SO\u2082', co: 'CO',
+};
+
+function refreshChartHeadings() {
+  const label = PARAM_LABELS[state.chartParam] || state.chartParam;
+  const t = PARAM_THRESHOLDS[state.chartParam];
+  document.querySelector('.chart-panel .panel-head h2').textContent = `${label} \u2014 rolling average`;
+  document.querySelector('.chart-max-panel .panel-head h2').textContent = `${label} \u2014 network peak`;
+  const hint = document.getElementById('chart-max-hint');
+  if (hint && t) hint.textContent = `worst station \u00b7 WHO ${t}`;
+}
 
 document.getElementById('param-select').addEventListener('change', e => {
   state.chartParam = e.target.value;
   state.chartSeries = [];
-  chart.data.labels = [];
-  chart.data.datasets[0].data = [];
-  chart.update('none');
-  // re-seed from current in-memory station readings so the chart isn't blank
+  state.chartMaxSeries = [];
+  for (const ch of [chart, chartMax]) {
+    ch.data.labels = [];
+    ch.data.datasets[0].data = [];
+    ch.update('none');
+  }
+  refreshChartHeadings();
+  // re-seed from current in-memory station readings so the charts aren't blank
   const seed = [];
   state.stations.forEach(st => {
     const e2 = st.avgBy[state.chartParam];
@@ -160,7 +197,10 @@ document.getElementById('param-select').addEventListener('change', e => {
   });
   if (seed.length) {
     const avg = seed.reduce((s, v) => s + v, 0) / seed.length;
-    pushChartSample(state.chartParam, avg, Date.now());
+    const max = seed.reduce((m, v) => Math.max(m, v), -Infinity);
+    const now = Date.now();
+    pushChartSample(state.chartParam, avg, now);
+    pushChartMaxSample(state.chartParam, max, now);
   }
 });
 
@@ -172,6 +212,17 @@ function pushChartSample(param, value, ts) {
   chart.data.datasets[0].data = state.chartSeries.map(p => p.value);
   chart.update('none');
 }
+
+function pushChartMaxSample(param, value, ts) {
+  if (param !== state.chartParam) return;
+  state.chartMaxSeries.push({ ts, value });
+  if (state.chartMaxSeries.length > 60) state.chartMaxSeries.shift();
+  chartMax.data.labels = state.chartMaxSeries.map(p => new Date(p.ts).toLocaleTimeString());
+  chartMax.data.datasets[0].data = state.chartMaxSeries.map(p => p.value);
+  chartMax.update('none');
+}
+
+refreshChartHeadings();
 
 // ----------------- alerts feed -----------------
 const alertList = document.getElementById('alert-list');
@@ -204,10 +255,15 @@ function addAlert(a) {
   while (alertList.children.length > 100) alertList.removeChild(alertList.lastChild);
 }
 
-function addCritical(c) {
+function addCritical(c, showToast = true) {
   state.critical.unshift(c);
   state.critical = state.critical.slice(0, 50);
   document.getElementById('stat-critical').textContent = state.critical.length;
+
+  if (!showToast) return;
+
+  // Keep at most 4 toasts on screen; drop the oldest when a new one arrives.
+  while (toastHost.children.length >= 4) toastHost.removeChild(toastHost.firstChild);
 
   const t = document.createElement('div');
   t.className = 'toast';
@@ -275,13 +331,24 @@ setInterval(() => {
   document.getElementById('stat-worst').textContent    = worstSeverityLabel();
 }, 1000);
 
-// chart aggregator: average per 5s window
-const chartAggBuf = [];
+// Chart aggregator: tick every 5 s and push the network-wide mean of the
+// latest non-stale Flink-windowed averages per station. This matches the
+// panel title ("rolling average") and gives a dense, meaningful series even
+// when only a fraction of stations report the selected parameter each tick.
 setInterval(() => {
-  if (!chartAggBuf.length) return;
-  const avg = chartAggBuf.reduce((s, v) => s + v, 0) / chartAggBuf.length;
-  pushChartSample(state.chartParam, avg, Date.now());
-  chartAggBuf.length = 0;
+  const cutoff = Date.now() - STATION_PARAM_TTL_MS;
+  const values = [];
+  state.stations.forEach(st => {
+    const e = st.avgBy[state.chartParam];
+    if (!e || e.ts < cutoff || typeof e.value !== 'number') return;
+    values.push(e.value);
+  });
+  if (!values.length) return;
+  const avg = values.reduce((s, v) => s + v, 0) / values.length;
+  const max = values.reduce((m, v) => Math.max(m, v), -Infinity);
+  const now = Date.now();
+  pushChartSample(state.chartParam, avg, now);
+  pushChartMaxSample(state.chartParam, max, now);
 }, 5000);
 
 // ----------------- websocket -----------------
@@ -304,6 +371,32 @@ function setConn(ok) {
   document.getElementById('conn-text').textContent = ok ? 'live · streaming' : 'reconnecting…';
 }
 
+// Recolor every existing marker using the current map pollutant filter.
+function recolorStations() {
+  state.stations.forEach((st, key) => {
+    upsertStation({ location: key, lat: st.lat, lon: st.lon });
+  });
+}
+
+// ----- map pollutant selector -----
+const mapSelect = document.getElementById('map-param-select');
+if (mapSelect) {
+  mapSelect.addEventListener('change', e => {
+    state.mapParam = e.target.value;
+    recolorStations();
+  });
+}
+
+// ----- pause / freeze button -----
+const pauseBtn = document.getElementById('pause-btn');
+if (pauseBtn) {
+  pauseBtn.addEventListener('click', () => {
+    state.paused = !state.paused;
+    pauseBtn.classList.toggle('paused', state.paused);
+    pauseBtn.textContent = state.paused ? '▶ resume' : '‖ pause';
+  });
+}
+
 function handle(msg) {
   if (msg.type === 'snapshot') {
     const seedValues = [];
@@ -321,26 +414,30 @@ function handle(msg) {
     // seed the chart with an initial point so it isn't blank for 5 s
     if (seedValues.length) {
       const avg = seedValues.reduce((s, v) => s + v, 0) / seedValues.length;
-      pushChartSample(state.chartParam, avg, Date.now());
+      const max = seedValues.reduce((m, v) => Math.max(m, v), -Infinity);
+      const now = Date.now();
+      pushChartSample(state.chartParam, avg, now);
+      pushChartMaxSample(state.chartParam, max, now);
     }
     (msg.data.alerts || []).forEach(addAlert);
-    (msg.data.critical || []).forEach(addCritical);
+    (msg.data.critical || []).forEach(c => addCritical(c, false));
     document.getElementById('stat-alerts').textContent = state.alerts.length;
     document.getElementById('stat-critical').textContent = state.critical.length;
     return;
   }
   if (msg.type === 'reading') {
     // Raw readings keep the station alive on the map (coords, last_seen) and
-    // feed the live readings list + chart, but they are NOT authoritative
-    // for severity color -- enriched (windowed AVG) is.
+    // feed the live readings list, but they are NOT authoritative for
+    // severity color or the rolling-average chart -- enriched (windowed AVG)
+    // events are. The chart is driven by the 5 s aggregator that scans
+    // state.stations for the latest enriched values.
+    if (state.paused) return;
     upsertStation({ ...msg.data, source: 'raw' });
     addReading(msg.data);
-    if (msg.data.parameter === state.chartParam && typeof msg.data.value === 'number') {
-      chartAggBuf.push(msg.data.value);
-    }
     return;
   }
   if (msg.type === 'enriched') {
+    if (state.paused) return;
     state.enrichedBuffer.push(Date.now());
     // Authoritative window-averaged value -> drives map color, in agreement
     // with the alert thresholds Flink applies on the same average.
@@ -352,8 +449,8 @@ function handle(msg) {
     });
     return;
   }
-  if (msg.type === 'alert')    { addAlert(msg.data); return; }
-  if (msg.type === 'critical') { addCritical(msg.data); return; }
+  if (msg.type === 'alert')    { if (state.paused) return; addAlert(msg.data); return; }
+  if (msg.type === 'critical') { if (state.paused) return; addCritical(msg.data); return; }
 }
 
 connect();

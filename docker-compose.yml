@@ -23,6 +23,12 @@ services:
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      # Required for Flink's exactly-once Kafka sinks: with a single broker,
+      # the internal __transaction_state topic must be created with RF=1 and
+      # min ISR=1, otherwise initTransactions() blocks forever and the sink
+      # sub-tasks stay in INITIALIZING state indefinitely.
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
 
   # One-shot job that creates all topics with the right partition counts.

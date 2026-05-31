@@ -61,6 +61,20 @@ DEDUP_TTL_SEC = int(os.environ.get("DEDUP_TTL_SEC", "90"))
 # In-memory dedup: (location, parameter) -> (event_time_str, last_published_at).
 LAST_SEEN: dict[tuple[str, str], tuple[str, float]] = {}
 
+# OpenAQ uses out-of-band sentinel values for "no data" (e.g. 9999, -999) that
+# otherwise sail past the WHO thresholds and trigger bogus CRITICAL alerts.
+# We reject exact sentinels plus per-pollutant implausible upper bounds
+# (generous ceilings; real ambient readings stay far below these).
+SENTINELS = {9999, 99999, 999, -999, -9999}
+MAX_PLAUSIBLE = {
+    "pm25": 2000.0,   # µg/m³
+    "pm10": 3000.0,
+    "no2": 2000.0,
+    "o3": 2000.0,
+    "so2": 3000.0,
+    "co": 100000.0,   # µg/m³ (CO ambient is high but 9999 is a sentinel)
+}
+
 
 def make_producer() -> KafkaProducer:
     while True:
@@ -118,6 +132,10 @@ def to_payload(item: dict, param_name: str, now_iso: str, max_age: timedelta):
     value = item.get("value")
     if value is None or value < 0:  # OpenAQ "no-data" sentinel
         return None, "no_value"
+    # Reject sentinel / implausible values (OpenAQ "no data" markers like 9999
+    # that would otherwise breach WHO thresholds and fire fake CRITICAL alerts).
+    if value in SENTINELS or value >= MAX_PLAUSIBLE.get(param_name, float("inf")):
+        return None, "sentinel"
 
     location = f"Station-{loc_id}"
     event_time_str = event_dt.strftime("%Y-%m-%d %H:%M:%S")
@@ -160,7 +178,7 @@ def main() -> None:
     with ThreadPoolExecutor(max_workers=len(PARAMETERS)) as pool:
         while True:
             now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-            stats = {"ok": 0, "dup": 0, "stale": 0, "no_value": 0, "no_time": 0, "bad_time": 0}
+            stats = {"ok": 0, "dup": 0, "stale": 0, "no_value": 0, "no_time": 0, "bad_time": 0, "sentinel": 0}
             futures = [pool.submit(fetch_param, pid, pname)
                        for pid, pname in PARAMETERS.items()]
             for f in futures:
@@ -180,8 +198,8 @@ def main() -> None:
             except KafkaTimeoutError:
                 log.warning("flush timed out; broker may be slow")
             log.info(
-                "Tick: published=%d dup=%d stale=%d empty=%d (last_seen=%d)",
-                stats["ok"], stats["dup"], stats["stale"],
+                "Tick: published=%d dup=%d stale=%d sentinel=%d empty=%d (last_seen=%d)",
+                stats["ok"], stats["dup"], stats["stale"], stats["sentinel"],
                 stats["no_value"] + stats["no_time"] + stats["bad_time"],
                 len(LAST_SEEN),
             )

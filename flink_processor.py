@@ -38,6 +38,11 @@ def run_analytics_pipeline():
     settings = EnvironmentSettings.in_streaming_mode()
     t_env = StreamTableEnvironment.create(env, environment_settings=settings)
     t_env.get_config().set("pipeline.name", "AirQualityAnalyzer")
+    # Mark Kafka partitions as idle after 10s without records so the global
+    # watermark can still advance when only a few of the 12 partitions per
+    # topic are receiving data (we have ~40 stations spread unevenly across
+    # 12 partitions, so many partitions are silent for long stretches).
+    t_env.get_config().set("table.exec.source.idle-timeout", "10 s")
 
     # 2. Sources --------------------------------------------------------------
     # 2a. raw-air-quality: event-time via the producer-supplied timestamp,

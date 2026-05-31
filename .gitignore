@@ -1,3 +1,15 @@
 .env
 venv/
+.venv/
 jars/
+
+# Report build artifacts
+report/_raport.html
+report/__pycache__/
+
+# Raw collected data (large JSONL); keep figures, summary CSVs and manifest
+report/data/**/*.jsonl
+
+# Smoke-test leftovers and stray old report at repo root
+report/data/smoke_test/
+/AirQualityAnalyzer.pdf

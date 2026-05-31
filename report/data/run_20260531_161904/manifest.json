@@ -1,0 +1,13 @@
+{
+  "started": "20260531_161904",
+  "finished": "2026-05-31T14:19:06+00:00",
+  "minutes": 60.0,
+  "interval_s": 30,
+  "topics": [
+    "raw-air-quality",
+    "weather-stream",
+    "enriched-readings",
+    "pollution-alerts",
+    "critical-alerts"
+  ]
+}
